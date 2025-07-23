@@ -23,7 +23,7 @@
 #if !defined(KMS_H)
 #define KMS_H
 
-void SetMode(int drmFd, int desired_width, int desired_height, int desired_refresh,
+void SetMode(int drmFd, int desired_width, int desired_height, int desired_refresh, int hdr_enabled,
              uint32_t *pPlaneID, int *pWidth, int *pHeight);
 
 #endif /* KMS_H */

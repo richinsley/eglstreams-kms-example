@@ -29,6 +29,7 @@
 #define ARRAY_LEN(_arr) (sizeof(_arr) / sizeof(_arr[0]))
 
 void Fatal(const char *format, ...);
+void Warning(const char *format, ...);
 
 double GetTime(void);
 void PrintFps(void);

@@ -26,6 +26,7 @@
 #include "eglgears.h"
 #include <stdlib.h> // For atoi
 #include <stdio.h>  // For printf
+#include <string.h> // For strcmp
 
 /*
  * Example code demonstrating how to connect EGL to DRM KMS using
@@ -37,42 +38,39 @@ int main(int argc, char *argv[])
     EGLDisplay eglDpy;
     EGLDeviceEXT eglDevice;
     int drmFd, width, height;
-    int desired_width = 0;
-    int desired_height = 0;
-    int desired_refresh = 0;
+    int desired_width = 0, desired_height = 0, desired_refresh = 0;
+    int hdr_enabled = 0;
     uint32_t planeID = 0;
     EGLSurface eglSurface;
 
-    if (argc != 1 && argc != 3 && argc != 4) {
-        printf("Usage: %s [width height [refresh_rate]]\n", argv[0]);
-        return 1;
+    // Argument parsing
+    for (int i = 1; i < argc; ++i) {
+        if (strcmp(argv[i], "--hdr") == 0) {
+            hdr_enabled = 1;
+        } else if (i + 2 < argc && desired_width == 0) {
+            desired_width = atoi(argv[i]);
+            desired_height = atoi(argv[++i]);
+            desired_refresh = atoi(argv[++i]);
+        }
     }
 
-    if (argc >= 3) {
-        desired_width = atoi(argv[1]);
-        desired_height = atoi(argv[2]);
-    }
-
-    if (argc == 4) {
-        desired_refresh = atoi(argv[3]);
+    if (hdr_enabled) {
+        printf("HDR mode requested.\n");
     }
 
     GetEglExtensionFunctionPointers();
-
     eglDevice = GetEglDevice();
-
     drmFd = GetDrmFd(eglDevice);
 
-    SetMode(drmFd, desired_width, desired_height, desired_refresh,
+    SetMode(drmFd, desired_width, desired_height, desired_refresh, hdr_enabled,
             &planeID, &width, &height);
 
     eglDpy = GetEglDisplay(eglDevice, drmFd);
-
-    eglSurface = SetUpEgl(eglDpy, planeID, width, height);
+    eglSurface = SetUpEgl(eglDpy, planeID, width, height, hdr_enabled);
 
     InitGears(width, height);
 
-    while(1) {
+    while (1) {
         DrawGears();
         eglSwapBuffers(eglDpy, eglSurface);
         PrintFps();

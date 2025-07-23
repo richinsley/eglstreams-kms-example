@@ -33,6 +33,7 @@
 #include "utils.h"
 #include "egl.h"
 
+
 /* XXX khronos eglext.h does not yet have EGL_DRM_MASTER_FD_EXT */
 #if !defined(EGL_DRM_MASTER_FD_EXT)
 #define EGL_DRM_MASTER_FD_EXT                   0x333C
@@ -92,18 +93,18 @@ EGLDeviceEXT GetEglDevice(void)
      *
      * The EGL_EXT_device_query extension defines the functions:
      *
-     *   eglQueryDeviceAttribEXT()
-     *   eglQueryDeviceStringEXT()
+     * eglQueryDeviceAttribEXT()
+     * eglQueryDeviceStringEXT()
      *
      * as ways to generically query properties of EGLDeviceEXTs, and
      * separate EGL extensions define EGLDeviceEXT attributes that can
      * be queried through those functions.  E.g.,
      *
      * - EGL_NV_device_cuda lets you query the CUDA device ID
-     *   (EGL_CUDA_DEVICE_NV of an EGLDeviceEXT.
+     * (EGL_CUDA_DEVICE_NV of an EGLDeviceEXT.
      *
      * - EGL_EXT_device_drm lets you query the DRM device file
-     *   (EGL_DRM_DEVICE_FILE_EXT) of an EGLDeviceEXT.
+     * (EGL_DRM_DEVICE_FILE_EXT) of an EGLDeviceEXT.
      *
      * Future extensions could define other EGLDeviceEXT attributes
      * such as PCI BusID.
@@ -130,6 +131,7 @@ EGLDeviceEXT GetEglDevice(void)
 
     return device;
 }
+
 
 
 /*
@@ -233,24 +235,38 @@ EGLDisplay GetEglDisplay(EGLDeviceEXT device, int drmFd)
 /*
  * Set up EGL to present to a DRM KMS plane through an EGLStream.
  */
-EGLSurface SetUpEgl(EGLDisplay eglDpy, uint32_t planeID, int width, int height)
+EGLSurface SetUpEgl(EGLDisplay eglDpy, uint32_t planeID, int width, int height, int hdr_enabled)
 {
-    EGLint configAttribs[] = {
+    EGLint configAttribs_sdr[] = {
         EGL_SURFACE_TYPE, EGL_STREAM_BIT_KHR,
         EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT,
-        EGL_RED_SIZE, 1,
-        EGL_GREEN_SIZE, 1,
-        EGL_BLUE_SIZE, 1,
+        EGL_RED_SIZE, 8,
+        EGL_GREEN_SIZE, 8,
+        EGL_BLUE_SIZE, 8,
         EGL_ALPHA_SIZE, 0,
         EGL_DEPTH_SIZE, 1,
         EGL_NONE,
     };
 
+    EGLint configAttribs_hdr[] = {
+        EGL_SURFACE_TYPE, EGL_STREAM_BIT_KHR,
+        EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT,
+        EGL_RED_SIZE, 10,
+        EGL_GREEN_SIZE, 10,
+        EGL_BLUE_SIZE, 10,
+        EGL_ALPHA_SIZE, 2, // For XRGB2101010 format
+        EGL_DEPTH_SIZE, 1,
+        EGL_NONE,
+    };
+
+
+    EGLint *configAttribs = hdr_enabled ? configAttribs_hdr : configAttribs_sdr;
+
     EGLint contextAttribs[] = { EGL_NONE };
 
     EGLAttrib layerAttribs[] = {
         EGL_DRM_PLANE_EXT,
-        planeID,
+        (EGLAttrib)planeID,
         EGL_NONE,
     };
 
@@ -314,7 +330,11 @@ EGLSurface SetUpEgl(EGLDisplay eglDpy, uint32_t planeID, int width, int height)
     ret = eglChooseConfig(eglDpy, configAttribs, &eglConfig, 1, &n);
 
     if (!ret || !n) {
-        Fatal("eglChooseConfig() failed.\n");
+        if (hdr_enabled) {
+            Fatal("eglChooseConfig() failed to find a 10-bit HDR-capable EGL config.\n");
+        } else {
+            Fatal("eglChooseConfig() failed.\n");
+        }
     }
 
     /* Create an EGL context using the EGL config. */
@@ -357,15 +377,15 @@ EGLSurface SetUpEgl(EGLDisplay eglDpy, uint32_t planeID, int width, int height)
      * EGL_EXT_stream_consumer_egloutput with DRM atomic KMS requests.
      * But, EGL_EXT_stream_consumer_egloutput defines that by default:
      *
-     *   On success, <layer> is bound to <stream>, <stream> is placed
-     *   in the EGL_STREAM_STATE_CONNECTING_KHR state, and EGL_TRUE is
-     *   returned.  Initially, no changes occur to the image displayed
-     *   on <layer>. When the <stream> enters state
-     *   EGL_STREAM_STATE_NEW_FRAME_AVAILABLE_KHR, <layer> will begin
-     *   displaying frames, without further action required on the
-     *   application's part, as they become available, taking into
-     *   account any timestamps, swap intervals, or other limitations
-     *   imposed by the stream or producer attributes.
+     * On success, <layer> is bound to <stream>, <stream> is placed
+     * in the EGL_STREAM_STATE_CONNECTING_KHR state, and EGL_TRUE is
+     * returned.  Initially, no changes occur to the image displayed
+     * on <layer>. When the <stream> enters state
+     * EGL_STREAM_STATE_NEW_FRAME_AVAILABLE_KHR, <layer> will begin
+     * displaying frames, without further action required on the
+     * application's part, as they become available, taking into
+     * account any timestamps, swap intervals, or other limitations
+     * imposed by the stream or producer attributes.
      *
      * So, eglSwapBuffers() (to produce new frames) is sufficient for
      * the frames to be displayed.  That behavior can be altered with
