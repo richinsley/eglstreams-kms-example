@@ -55,9 +55,10 @@ int main(int argc, char *argv[])
     }
 
     if (hdr_enabled) {
-        printf("HDR mode requested.\n");
+        printf("HDR %d,%d @%d requested\n", desired_width, desired_height, desired_refresh);
+    } else {
+        printf("%d,%d @%d requested\n", desired_width, desired_height, desired_refresh);
     }
-
     GetEglExtensionFunctionPointers();
     eglDevice = GetEglDevice();
     drmFd = GetDrmFd(eglDevice);

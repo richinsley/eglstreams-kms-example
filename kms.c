@@ -5,7 +5,7 @@
 #include <unistd.h>
 #include <stdio.h>
 #include <errno.h>
-
+#include <stdint.h>
 #include <xf86drmMode.h>
 #include <xf86drm.h>
 #include <drm/drm_mode.h>
@@ -23,13 +23,8 @@
 #define HDMI_EOTF_SMPTE_ST2084             2
 #define HDMI_EOTF_HLG                      3
 #endif
-#ifndef TRADITIONAL_GAMMA_ST2084
-#define TRADITIONAL_GAMMA_SDR      0
-#define TRADITIONAL_GAMMA_HDR      1
-#define TRADITIONAL_GAMMA_ST2084   2
-#define TRADITIONAL_GAMMA_HLG      3
-#endif
 #ifndef DRM_MODE_COLORIMETRY_BT2020_YCC
+// Found in recent drm_mode.h, but define it for older versions
 #define DRM_MODE_COLORIMETRY_BT2020_YCC 10
 #endif
 // --- End of fallback definitions ---
@@ -58,7 +53,7 @@ struct PropertyIDs {
     DrmProperty connector_crtc_id;
     DrmProperty hdr_output_metadata;
     DrmProperty colorspace;
-    DrmProperty eotf;
+    DrmProperty eotf; // Will hold NV_CRTC_REGAMMA_TF
 };
 
 static void FindProperty(int drmFd, uint32_t object_id, uint32_t object_type, const char *prop_name, DrmProperty *property)
@@ -81,6 +76,24 @@ static void FindProperty(int drmFd, uint32_t object_id, uint32_t object_type, co
     drmModeFreeObjectProperties(props);
 }
 
+// Helper to get an enum's value from its string name
+static uint64_t GetEnumValue(int drmFd, uint32_t prop_id, const char* enum_name) {
+    drmModePropertyPtr prop = drmModeGetProperty(drmFd, prop_id);
+    if (!prop) return 0;
+
+    for (int i = 0; i < prop->count_enums; i++) {
+        if (strcmp(prop->enums[i].name, enum_name) == 0) {
+            uint64_t value = prop->enums[i].value;
+            drmModeFreeProperty(prop);
+            return value;
+        }
+    }
+
+    drmModeFreeProperty(prop);
+    return 0; // Not found
+}
+
+
 static void AssignPropertyIDs(int drmFd, const struct Config *pConfig, struct PropertyIDs *pPropertyIDs)
 {
     // Find CRTC properties
@@ -102,15 +115,12 @@ static void AssignPropertyIDs(int drmFd, const struct Config *pConfig, struct Pr
     // Find Connector properties
     FindProperty(drmFd, pConfig->connectorID, DRM_MODE_OBJECT_CONNECTOR, "CRTC_ID", &pPropertyIDs->connector_crtc_id);
 
-    // Find HDR properties on EITHER CRTC or Connector
+    // Find HDR properties
     FindProperty(drmFd, pConfig->connectorID, DRM_MODE_OBJECT_CONNECTOR, "Colorspace", &pPropertyIDs->colorspace);
     FindProperty(drmFd, pConfig->connectorID, DRM_MODE_OBJECT_CONNECTOR, "HDR_OUTPUT_METADATA", &pPropertyIDs->hdr_output_metadata);
     
-    // EOTF is special, it can be on CRTC or Connector. Prefer Connector.
-    FindProperty(drmFd, pConfig->connectorID, DRM_MODE_OBJECT_CONNECTOR, "EOTF", &pPropertyIDs->eotf);
-    if(pPropertyIDs->eotf.id == 0) {
-        FindProperty(drmFd, pConfig->crtcID, DRM_MODE_OBJECT_CRTC, "EOTF", &pPropertyIDs->eotf);
-    }
+    // NVIDIA specific EOTF property on the CRTC
+    FindProperty(drmFd, pConfig->crtcID, DRM_MODE_OBJECT_CRTC, "NV_CRTC_REGAMMA_TF", &pPropertyIDs->eotf);
 }
 
 // All other functions (CreateHdrMetadataBlob, PickConnector, etc.) remain the same.
@@ -305,28 +315,41 @@ static uint32_t CreateHdrMetadataBlob(int drmFd)
 
 static void AssignAtomicRequest(int drmFd,
                                 drmModeAtomicReqPtr pAtomic,
+                                const struct Config *pConfig,
                                 const struct PropertyIDs *pPropertyIDs,
                                 uint32_t modeID, uint32_t fb, int hdr_enabled)
 {
+    // --- THIS IS THE CRITICAL FIX for the "Invalid argument" error ---
+    // The previous code was using the property's object_id as the value.
+    // We need to use the actual width and height from the mode config.
+    // Source coordinates are in 16.16 fixed point.
+    drmModeAtomicAddProperty(pAtomic, pPropertyIDs->src_w.object_id, pPropertyIDs->src_w.id, (uint64_t)pConfig->width << 16);
+    drmModeAtomicAddProperty(pAtomic, pPropertyIDs->src_h.object_id, pPropertyIDs->src_h.id, (uint64_t)pConfig->height << 16);
+    drmModeAtomicAddProperty(pAtomic, pPropertyIDs->crtc_w.object_id, pPropertyIDs->crtc_w.id, pConfig->width);
+    drmModeAtomicAddProperty(pAtomic, pPropertyIDs->crtc_h.object_id, pPropertyIDs->crtc_h.id, pConfig->height);
+    // ----------------------------------------------------------------
+
     drmModeAtomicAddProperty(pAtomic, pPropertyIDs->mode_id.object_id, pPropertyIDs->mode_id.id, modeID);
     drmModeAtomicAddProperty(pAtomic, pPropertyIDs->active.object_id, pPropertyIDs->active.id, 1);
-    drmModeAtomicAddProperty(pAtomic, pPropertyIDs->connector_crtc_id.object_id, pPropertyIDs->connector_crtc_id.id, pPropertyIDs->crtc_id.object_id);
+    drmModeAtomicAddProperty(pAtomic, pPropertyIDs->connector_crtc_id.object_id, pPropertyIDs->connector_crtc_id.id, pConfig->crtcID);
     drmModeAtomicAddProperty(pAtomic, pPropertyIDs->fb_id.object_id, pPropertyIDs->fb_id.id, fb);
-    drmModeAtomicAddProperty(pAtomic, pPropertyIDs->crtc_id.object_id, pPropertyIDs->crtc_id.id, pPropertyIDs->crtc_id.object_id);
+    drmModeAtomicAddProperty(pAtomic, pPropertyIDs->crtc_id.object_id, pPropertyIDs->crtc_id.id, pConfig->crtcID);
     
-    drmModeAtomicAddProperty(pAtomic, pPropertyIDs->src_w.object_id, pPropertyIDs->src_w.id, (uint64_t)pPropertyIDs->crtc_w.object_id << 16);
-    drmModeAtomicAddProperty(pAtomic, pPropertyIDs->src_h.object_id, pPropertyIDs->src_h.id, (uint64_t)pPropertyIDs->crtc_h.object_id << 16);
-    drmModeAtomicAddProperty(pAtomic, pPropertyIDs->crtc_w.object_id, pPropertyIDs->crtc_w.id, pPropertyIDs->crtc_w.object_id);
-    drmModeAtomicAddProperty(pAtomic, pPropertyIDs->crtc_h.object_id, pPropertyIDs->crtc_h.id, pPropertyIDs->crtc_h.object_id);
-
     if (hdr_enabled) {
         if (pPropertyIDs->eotf.id) {
-            drmModeAtomicAddProperty(pAtomic, pPropertyIDs->eotf.object_id, pPropertyIDs->eotf.id, TRADITIONAL_GAMMA_ST2084);
+            // Get the enum value for "PQ (Perceptual Quantizer)"
+            uint64_t pq_value = GetEnumValue(drmFd, pPropertyIDs->eotf.id, "PQ (Perceptual Quantizer)");
+            if (pq_value) {
+                drmModeAtomicAddProperty(pAtomic, pPropertyIDs->eotf.object_id, pPropertyIDs->eotf.id, pq_value);
+            } else {
+                 Warning("Could not find 'PQ (Perceptual Quantizer)' enum for NV_CRTC_REGAMMA_TF.\n");
+            }
         } else {
-            Warning("EOTF property not found.\n");
+            Warning("EOTF property (NV_CRTC_REGAMMA_TF) not found.\n");
         }
 
         if (pPropertyIDs->colorspace.id) {
+            // The standard BT.2020 YCC value should work here
             drmModeAtomicAddProperty(pAtomic, pPropertyIDs->colorspace.object_id, pPropertyIDs->colorspace.id, DRM_MODE_COLORIMETRY_BT2020_YCC);
         } else {
             Warning("Colorspace property not found.\n");
@@ -442,11 +465,8 @@ void SetMode(int drmFd, int desired_width, int desired_height, int desired_refre
     modeID = CreateModeID(drmFd, &config);
     fb = CreateFb(drmFd, &config);
     pAtomic = drmModeAtomicAlloc();
-
-    propertyIDs.crtc_w.object_id = config.width;
-    propertyIDs.crtc_h.object_id = config.height;
     
-    AssignAtomicRequest(drmFd, pAtomic, &propertyIDs, modeID, fb, hdr_enabled);
+    AssignAtomicRequest(drmFd, pAtomic, &config, &propertyIDs, modeID, fb, hdr_enabled);
 
     ret = drmModeAtomicCommit(drmFd, pAtomic, flags, NULL);
     drmModeAtomicFree(pAtomic);
