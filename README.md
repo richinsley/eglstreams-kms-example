@@ -1,5 +1,7 @@
 eglstreams-kms-example
 ======================
+Forked from:
+https://github.com/aritger/eglstreams-kms-example
 
 This is a simple example program demonstrating the use of EGLStreams in conjunction with DRM KMS.  Build, and then run as root from a console, without an X server running.
 
@@ -12,6 +14,9 @@ Requirements to Use
 * Enable NVIDIA's DRM KMS support:
     modprobe -r nvidia-drm ; modprobe nvidia-drm modeset=1
 * Stop the X server, or any other potential DRM client.  eglstreams-kms-example requires the ability to become DRM master in order to do modesets.
+* **libdrm-dev** (or equivalent for your distribution) needs to be installed.
+* **pkg-config** needs to be installed.
+* **CMake 3.10** or later.
 
 This example program demonstrates:
 
@@ -37,6 +42,44 @@ Dependencies
 * The Makefile links eglstreams-kms-example against libEGL.so and libOpenGL.so, the latter of which is provided by GLVND (enabled by default in NVIDIA driver releases 364.12 or later).
 
 * The use of libdrm requires your distribution's libdrm development package.  E.g., on recent Fedora versions, the needed package is "libdrm-devel".
+
+## How to Build
+
+1.  **Create a build directory:**
+    ```bash
+    mkdir build && cd build
+    ```
+
+2.  **Run CMake:**
+    ```bash
+    cmake ..
+    ```
+
+3.  **Compile the project:**
+    ```bash
+    make
+    ```
+
+The executable `eglstreams-kms-example` will be created in the `build` directory.
+
+## How to Run
+
+Run the program as root from a console where no other display server (like X11 or Wayland) is running.
+
+To use the default resolution and refresh rate:
+```bash
+sudo ./build/eglstreams-kms-example
+```
+
+To specify a resolution (e.g., 1920x1080):
+```bash
+sudo ./build/eglstreams-kms-example 1920 1080
+```
+
+To specify a resolution and refresh rate (e.g., 1920x1080 at 120Hz):
+```bash
+sudo ./build/eglstreams-kms-example 1920 1080 120
+```
 
 Concerns
 --------

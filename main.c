@@ -24,19 +24,38 @@
 #include "egl.h"
 #include "kms.h"
 #include "eglgears.h"
+#include <stdlib.h> // For atoi
+#include <stdio.h>  // For printf
 
 /*
  * Example code demonstrating how to connect EGL to DRM KMS using
  * EGLStreams.
  */
 
-int main(void)
+int main(int argc, char *argv[])
 {
     EGLDisplay eglDpy;
     EGLDeviceEXT eglDevice;
     int drmFd, width, height;
+    int desired_width = 0;
+    int desired_height = 0;
+    int desired_refresh = 0;
     uint32_t planeID = 0;
     EGLSurface eglSurface;
+
+    if (argc != 1 && argc != 3 && argc != 4) {
+        printf("Usage: %s [width height [refresh_rate]]\n", argv[0]);
+        return 1;
+    }
+
+    if (argc >= 3) {
+        desired_width = atoi(argv[1]);
+        desired_height = atoi(argv[2]);
+    }
+
+    if (argc == 4) {
+        desired_refresh = atoi(argv[3]);
+    }
 
     GetEglExtensionFunctionPointers();
 
@@ -44,7 +63,8 @@ int main(void)
 
     drmFd = GetDrmFd(eglDevice);
 
-    SetMode(drmFd, &planeID, &width, &height);
+    SetMode(drmFd, desired_width, desired_height, desired_refresh,
+            &planeID, &width, &height);
 
     eglDpy = GetEglDisplay(eglDevice, drmFd);
 

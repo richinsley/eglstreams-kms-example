@@ -25,6 +25,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <unistd.h>
+#include <stdio.h>
 
 #include <xf86drmMode.h>
 #include <xf86drm.h>
@@ -32,6 +33,7 @@
 #include "kms.h"
 #include "utils.h"
 
+// Config, PropertyIDs, and PropertyIDAddresses structs remain the same...
 struct Config {
     uint32_t connectorID;
     uint32_t crtcID;
@@ -79,70 +81,84 @@ struct PropertyIDAddresses {
  */
 static void PickConnector(int drmFd,
                           drmModeResPtr pModeRes,
+                          int desired_width, int desired_height, int desired_refresh,
                           struct Config *pConfig)
 {
-    int i, j;
+    int i, j, k;
 
+    // Find a connected connector
     for (i = 0; i < pModeRes->count_connectors; i++) {
+        drmModeConnectorPtr pConnector = drmModeGetConnector(drmFd, pModeRes->connectors[i]);
+        if (!pConnector) continue;
 
-        drmModeConnectorPtr pConnector =
-            drmModeGetConnector(drmFd, pModeRes->connectors[i]);
+        if (pConnector->connection == DRM_MODE_CONNECTED && pConnector->count_modes > 0) {
+            drmModeModeInfo *best_mode = NULL;
 
-        if (pConnector == NULL) {
-            Fatal("Unable to query DRM-KMS information for "
-                  "connector index %d\n", i);
-        }
+            // Iterate through modes to find the best match
+            for (k = 0; k < pConnector->count_modes; k++) {
+                drmModeModeInfo *current_mode = &pConnector->modes[k];
 
-        if ((pConnector->connection == DRM_MODE_CONNECTED) &&
-            (pConnector->count_modes > 0) &&
-            (pConnector->count_encoders > 0)) {
-
-            drmModeEncoderPtr pEncoder =
-                drmModeGetEncoder(drmFd, pConnector->encoders[0]);
-
-            if (pEncoder == NULL) {
-                Fatal("Unable to query DRM-KMS information for"
-                      "encoder 0x%08x\n", pConnector->encoders[0]);
-            }
-
-            pConfig->connectorID = pModeRes->connectors[i];
-            pConfig->mode = pConnector->modes[0];
-
-            for (j = 0; j < pModeRes->count_crtcs; j++) {
-
-                if ((pEncoder->possible_crtcs & (1 << j)) == 0) {
-                    continue;
+                // If a full spec is given (width, height, refresh)
+                if (desired_width > 0 && desired_height > 0 && desired_refresh > 0) {
+                    if (current_mode->hdisplay == desired_width &&
+                        current_mode->vdisplay == desired_height &&
+                        current_mode->vrefresh == (uint32_t)desired_refresh) {
+                        best_mode = current_mode;
+                        break; // Exact match found
+                    }
                 }
-
-                pConfig->crtcID = pModeRes->crtcs[j];
-                pConfig->crtcIndex = j;
-                break;
+                // If only resolution is given
+                else if (desired_width > 0 && desired_height > 0) {
+                     if (current_mode->hdisplay == desired_width &&
+                         current_mode->vdisplay == desired_height) {
+                         // Take the first matching resolution if refresh isn't specified
+                         if (!best_mode) {
+                            best_mode = current_mode;
+                         }
+                     }
+                }
             }
 
-            if (pConfig->crtcID == 0) {
-                Fatal("Unable to select a suitable CRTC.\n");
+            // If no specific mode was found, take the preferred one (first in the list)
+            if (!best_mode) {
+                 best_mode = &pConnector->modes[0];
+                 if (desired_width > 0) { // Only print if a selection was attempted
+                     printf("Desired mode (%dx%d @ %dHz) not found. Using default: %dx%d @ %dHz.\n",
+                            desired_width, desired_height, desired_refresh,
+                            best_mode->hdisplay, best_mode->vdisplay, best_mode->vrefresh);
+                 }
             }
 
-            drmModeFreeEncoder(pEncoder);
+            pConfig->mode = *best_mode;
+            pConfig->connectorID = pModeRes->connectors[i];
+
+            // Find a suitable CRTC for this connector
+            drmModeEncoderPtr pEncoder = drmModeGetEncoder(drmFd, pConnector->encoders[0]);
+            if (pEncoder) {
+                for (j = 0; j < pModeRes->count_crtcs; j++) {
+                    if ((pEncoder->possible_crtcs & (1 << j))) {
+                        pConfig->crtcID = pModeRes->crtcs[j];
+                        pConfig->crtcIndex = j;
+                        break;
+                    }
+                }
+                drmModeFreeEncoder(pEncoder);
+            }
+
+            drmModeFreeConnector(pConnector);
+
+            if (pConfig->crtcID) {
+                return; // Found a complete setup
+            }
         }
-
         drmModeFreeConnector(pConnector);
     }
 
-    if (pConfig->connectorID == 0) {
-        Fatal("Could not find a suitable connector.\n");
-    }
-
-    if (pConfig->crtcID == 0) {
-        Fatal("Could not find a suitable CRTC.\n");
-    }
+    Fatal("Could not find a suitable connector.\n");
 }
 
 
-/*
- * Search for the specified property on the given object, and return
- * its value.
- */
+// GetPropertyValue and PickPlane remain the same...
 static uint64_t GetPropertyValue(
     int drmFd,
     uint32_t objectID,
@@ -185,10 +201,6 @@ static uint64_t GetPropertyValue(
     return value;
 }
 
-
-/*
- * Pick a primary plane that can be used by the CRTC in the Config.
- */
 static void PickPlane(int drmFd, struct Config *pConfig)
 {
     drmModePlaneResPtr pPlaneRes = drmModeGetPlaneResources(drmFd);
@@ -235,7 +247,7 @@ static void PickPlane(int drmFd, struct Config *pConfig)
 /*
  * Pick a connector, CRTC, and plane to use for the modeset.
  */
-static void PickConfig(int drmFd, struct Config *pConfig)
+static void PickConfig(int drmFd, int desired_width, int desired_height, int desired_refresh, struct Config *pConfig)
 {
     drmModeResPtr pModeRes;
     int ret;
@@ -258,7 +270,7 @@ static void PickConfig(int drmFd, struct Config *pConfig)
         Fatal("Unable to query DRM-KMS resources.\n");
     }
 
-    PickConnector(drmFd, pModeRes, pConfig);
+    PickConnector(drmFd, pModeRes, desired_width, desired_height, desired_refresh, pConfig);
 
     PickPlane(drmFd, pConfig);
 
@@ -269,9 +281,7 @@ static void PickConfig(int drmFd, struct Config *pConfig)
 }
 
 
-/*
- * Create an ID for the mode in the specified config.
- */
+// CreateModeID, CreateFb, AssignPropertyIDs, and AssignAtomicRequest remain the same...
 static uint32_t CreateModeID(int drmFd, const struct Config *pConfig)
 {
     uint32_t modeID = 0;
@@ -285,10 +295,6 @@ static uint32_t CreateModeID(int drmFd, const struct Config *pConfig)
     return modeID;
 }
 
-
-/*
- * Create a blank DRM fb object.
- */
 static uint32_t CreateFb(int drmFd, const struct Config *pConfig)
 {
     struct drm_mode_create_dumb createRequest = { 0 };
@@ -330,11 +336,6 @@ static uint32_t CreateFb(int drmFd, const struct Config *pConfig)
     return fb;
 }
 
-
-/*
- * Query the properties for the specified object, and populate the IDs
- * in the given table.
- */
 static void AssignPropertyIDsOneType(int drmFd,
                                      uint32_t objectID,
                                      uint32_t objectType,
@@ -378,11 +379,6 @@ static void AssignPropertyIDsOneType(int drmFd,
     }
 }
 
-
-/*
- * Find the property IDs for the CRTC, plane, and connector in the
- * Config.
- */
 static void AssignPropertyIDs(int drmFd,
                               const struct Config *pConfig,
                               struct PropertyIDs *pPropertyIDs)
@@ -420,14 +416,6 @@ static void AssignPropertyIDs(int drmFd,
                              connectorTable, ARRAY_LEN(connectorTable));
 }
 
-
-/*
- * A KMS atomic request is made by "adding properties" to a
- * drmModeAtomicReqPtr object.
- *
- * Find the property IDs that we need to describe the request, then
- * add the properties to the request.
- */
 static void AssignAtomicRequest(int drmFd,
                                 drmModeAtomicReqPtr pAtomic,
                                 const struct Config *pConfig,
@@ -503,7 +491,8 @@ static void AssignAtomicRequest(int drmFd,
  * present, and its dimensions.  On failure, exit with a fatal error
  * message.
  */
-void SetMode(int drmFd, uint32_t *pPlaneID, int *pWidth, int *pHeight)
+void SetMode(int drmFd, int desired_width, int desired_height, int desired_refresh,
+             uint32_t *pPlaneID, int *pWidth, int *pHeight)
 {
     struct Config config = { 0 };
     drmModeAtomicReqPtr pAtomic;
@@ -511,7 +500,7 @@ void SetMode(int drmFd, uint32_t *pPlaneID, int *pWidth, int *pHeight)
     int ret;
     const uint32_t flags = DRM_MODE_ATOMIC_ALLOW_MODESET;
 
-    PickConfig(drmFd, &config);
+    PickConfig(drmFd, desired_width, desired_height, desired_refresh, &config);
 
     modeID = CreateModeID(drmFd, &config);
     fb = CreateFb(drmFd, &config);
@@ -531,4 +520,6 @@ void SetMode(int drmFd, uint32_t *pPlaneID, int *pWidth, int *pHeight)
     *pPlaneID = config.planeID;
     *pWidth = config.width;
     *pHeight = config.height;
+
+    printf("Mode set to %dx%d @ %dHz\n", config.width, config.height, config.mode.vrefresh);
 }
